@@ -687,7 +687,7 @@ impl Default for NoobQ {
             EditorConfig::new(1180, 720).assets(Assets::Lookup(ui_lookup)),
             |b| {
                 b.meta(serde_json::json!({
-                    "vendor": "Ely Erin Fox",
+                    "vendor": "Noob Audio Engineering",
                     "version": env!("CARGO_PKG_VERSION"),
                     "sample_rate": 48_000.0,
                     "bands": BANDS,
@@ -746,7 +746,7 @@ impl NoobQ {
 
 impl Plugin for NoobQ {
     const NAME: &'static str = "Noob-Q";
-    const VENDOR: &'static str = "Ely Erin Fox";
+    const VENDOR: &'static str = "Noob Audio Engineering";
     const URL: &'static str = env!("CARGO_PKG_HOMEPAGE");
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
