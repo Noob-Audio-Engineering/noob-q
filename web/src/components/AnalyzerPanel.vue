@@ -14,7 +14,9 @@
  * Emits `freeze-hold` (Boolean): pointer down / up on the Freeze button,
  * so App.vue can implement the temporary click-and-hold freeze on top of
  * the click toggle. `ui.spectrumGrab` enables hover-to-grab in the display.
- * "Show Collisions" needs other instances of the plug-in and is a stub.
+ * Show Collisions is not offered: it needs the spectra of other instances,
+ * which nothing here carries, and a permanently disabled button is an
+ * ornament rather than a control.
  */
 import { hasParam, ui, useGlobals } from '../composables/useNoobVstWebguiFramework.js';
 
@@ -65,7 +67,6 @@ const emit = defineEmits(['freeze-hold']);
         Freeze
       </button>
       <button class="chip" :class="{ on: ui.spectrumGrab }" title="Hover the spectrum a moment to grab peaks" @click="ui.spectrumGrab = !ui.spectrumGrab">Spectrum Grab</button>
-      <button class="chip opacity-40 cursor-not-allowed" title="Needs other instances; not available in this example" disabled>Show Collisions</button>
     </div>
   </div>
 </template>

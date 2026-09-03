@@ -30,11 +30,12 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { bandCoefs, bandDb } from '@noob-audio-engineering/noob-vst-webgui-framework/components';
-import { createBand, hasParam, useNoobVstWebguiFramework, useStream } from '../composables/useNoobVstWebguiFramework.js';
+import { createBand, hasParam, useGlobals, useNoobVstWebguiFramework, useStream } from '../composables/useNoobVstWebguiFramework.js';
 import { loadReferences, saveReferences } from '../presets.js';
 
 const emit = defineEmits(['close']);
 const { manifest } = useNoobVstWebguiFramework();
+const g = useGlobals();
 const sr = manifest.value?.meta?.sample_rate || 48000;
 const step = ref(1);
 const bands = ref(8);
@@ -97,6 +98,11 @@ let offIn = null;
 let offSc = null;
 onMounted(() => {
   const pre = useStream('spectrum_pre');
+  // Analyzer.vue owns this subscription and ties it to the Pre analyzer
+  // switch, so with that switch off nothing arrived here and recording
+  // silently never started. Turn it on for as long as the panel is open,
+  // then hand it back to whatever the switch says.
+  pre.subscribe({ enabled: true });
   offIn = pre.on((d) => {
     if (!recordingIn.value || step.value !== 1) return;
     accumulate(accIn, framesIn.value, d);
@@ -118,6 +124,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   offIn?.();
   offSc?.();
+  useStream('spectrum_pre').subscribe({ enabled: g.anPre ? g.anPre.plain >= 0.5 : true });
 });
 
 const haveIn = computed(() => framesIn.value > 10);

@@ -71,6 +71,10 @@ impl Default for DynSettings {
 const KNEE_DB: f32 = 12.0;
 /// Auto threshold sits this far above the region's running average.
 const AUTO_OFFSET_DB: f32 = 3.0;
+/// Time constant of the block-rate gain smoother, seconds. Short enough to
+/// be inaudible against the shortest attack the parameter allows, long
+/// enough to keep a per-block coefficient change from clicking.
+const SMOOTH_S: f32 = 0.002;
 
 /// The per-band detector state. One per band, owned by the engine; the
 /// band-pass that isolates the region lives in the engine's `Band`, this
@@ -122,6 +126,14 @@ impl Dynamics {
         let a = x.abs();
         let k = if a > self.env { self.att } else { self.rel };
         self.env += (a - self.env) * k;
+        // `env * rel` underflows to zero before `env` does, so without this
+        // the envelope stops decaying at a subnormal and holds it forever:
+        // measured, it stuck at 4.0e-42 after 11.4 s of silence and never
+        // reached zero, leaving every quiet band doing subnormal arithmetic
+        // on every sample. Well below anything the detector can hear.
+        if self.env < 1e-20 {
+            self.env = 0.0;
+        }
     }
 
     /// Update once per block after feeding the block's samples; returns the
@@ -145,8 +157,16 @@ impl Dynamics {
         let over = env_db - thr;
         let amount = (over / KNEE_DB).clamp(0.0, 1.0);
         let target = s.range_db * amount;
-        // Block-rate smoothing keeps coefficient updates click-free.
-        self.gain_db += (target - self.gain_db) * 0.5;
+        // The attack and release times belong to the envelope follower,
+        // which runs per sample in `feed`. All this does is take the edge
+        // off a coefficient change, so its coefficient is derived from the
+        // elapsed time rather than being a fixed step per block. A fixed
+        // step made the realized ramp about four blocks long whatever the
+        // parameters said: 0.1 ms and 10 ms of attack were identical, and
+        // one setting took 5.33 ms at a 64-sample buffer against 85.33 ms
+        // at 1024, so an offline render did not match the mix.
+        let k = 1.0 - (-(block_len as f32 / self.sr) / SMOOTH_S).exp();
+        self.gain_db += (target - self.gain_db) * k.clamp(0.0, 1.0);
         if self.gain_db.abs() < 1e-3 {
             self.gain_db = 0.0;
         }
@@ -156,6 +176,12 @@ impl Dynamics {
     /// The dynamic gain returned by the last `update_block`, dB.
     pub fn gain_db(&self) -> f32 {
         self.gain_db
+    }
+
+    /// The raw peak envelope, linear. Exposed so a test can check that it
+    /// reaches exactly zero rather than parking on a subnormal.
+    pub fn envelope(&self) -> f32 {
+        self.env
     }
 
     /// The current detector envelope in dBFS (what the `band_level` stream
@@ -175,6 +201,93 @@ impl Dynamics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Time in ms for the gain to reach 90 % of its range on a steady tone.
+    fn t90(attack_ms: f32, block: usize) -> f32 {
+        let sr = 48_000.0f32;
+        let s = DynSettings {
+            on: true,
+            range_db: -12.0,
+            threshold_db: -40.0,
+            auto_threshold: false,
+            attack_ms,
+            release_ms: 200.0,
+            external: false,
+        };
+        let mut d = Dynamics::default();
+        d.set(&s, sr);
+        let mut n = 0usize;
+        for _ in 0..4000 {
+            for i in 0..block {
+                let ph = (n + i) as f32 / sr * 1000.0 * std::f32::consts::TAU;
+                d.feed(ph.sin() * 0.5);
+            }
+            n += block;
+            if d.update_block(&s, block) <= -12.0 * 0.9 {
+                return n as f32 / sr * 1000.0;
+            }
+        }
+        f32::INFINITY
+    }
+
+    /// The realized timing has to come from the parameters, not from the
+    /// host's buffer size. It used to come from a fixed step per block: one
+    /// setting took 5.33 ms at a 64-sample buffer and 85.33 ms at 1024, so
+    /// an offline render did not match what was mixed.
+    #[test]
+    fn attack_timing_does_not_depend_on_the_buffer_size() {
+        for attack in [100.0f32, 500.0] {
+            let small = t90(attack, 64);
+            let large = t90(attack, 1024);
+            // Within a block of each other. The gain is recomputed once per
+            // block, so one block is the finest timing anything can resolve.
+            let block_ms = 1024.0 / 48.0;
+            assert!(
+                (small - large).abs() <= block_ms,
+                "attack {attack} ms: {small:.1} ms at 64 samples against {large:.1} at 1024"
+            );
+        }
+    }
+
+    /// And the parameter has to matter at all: a long attack must be
+    /// measurably slower than a short one.
+    #[test]
+    fn attack_parameter_sets_the_ramp() {
+        let fast = t90(1.0, 64);
+        let slow = t90(500.0, 64);
+        assert!(
+            slow > fast * 4.0,
+            "500 ms attack reached the range in {slow:.1} ms against {fast:.1} for 1 ms"
+        );
+    }
+
+    /// The envelope has to reach exactly zero. `env * rel` underflows
+    /// before `env` does, so it used to stop decaying at a subnormal and
+    /// hold 4.0e-42 for ever, leaving a quiet band doing subnormal
+    /// arithmetic on every sample in the audio callback.
+    #[test]
+    fn envelope_reaches_zero_after_silence() {
+        let s = DynSettings {
+            on: true,
+            range_db: -12.0,
+            threshold_db: -40.0,
+            auto_threshold: false,
+            attack_ms: 10.0,
+            release_ms: 120.0,
+            external: false,
+        };
+        let mut d = Dynamics::default();
+        d.set(&s, 48_000.0);
+        for _ in 0..48_000 {
+            d.feed(0.5);
+        }
+        // Twelve seconds of silence: the old recursion was still holding a
+        // subnormal at this point and never let go of it.
+        for _ in 0..48_000 * 12 {
+            d.feed(0.0);
+        }
+        assert_eq!(d.envelope(), 0.0, "envelope stuck at {:e}", d.envelope());
+    }
 
     #[test]
     fn loud_region_reaches_range_and_releases() {

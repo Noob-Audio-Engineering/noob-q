@@ -180,6 +180,12 @@ export function setBand(n, v) {
 export function createBand(v) {
   const n = firstFreeBand();
   if (n == null) return null;
+  // A slot is recycled rather than allocated, so anything left unset here
+  // keeps the deleted band's value. The threshold and the two dynamics
+  // times used to be omitted, so a new band inherited them; take each from
+  // the parameter's own default so a fresh band is a fresh band.
+  const b = useBand(n);
+  const spec = (h) => h.param.spec.default;
   setBand(n, {
     shape: 0,
     gain: 0,
@@ -190,6 +196,9 @@ export function createBand(v) {
     dynRange: 0,
     dynAuto: true,
     dynSc: false,
+    dynThr: spec(b.dynThr),
+    dynAttack: spec(b.dynAttack),
+    dynRelease: spec(b.dynRelease),
     solo: false,
     ...v,
     on: true,

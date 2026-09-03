@@ -86,7 +86,7 @@ async function instanceMenu(e) {
       ? others.map((i) => ({ label: i.name, hint: `:${i.port}  pid ${i.pid}`, action: () => window.open(i.url, '_blank') }))
       : [{ label: `No other ${manifest?.name || 'noob-q'} instances running`, disabled: true }]),
     { divider: true },
-    { label: 'Reset all parameters', action: () => send('reset') },
+    { label: 'Reset all parameters', hint: 'Noob-Q extra', action: () => send('reset') },
   ]);
 }
 function sizeMenu(e) {
@@ -157,7 +157,6 @@ function clickPanel(name) {
 
 <template>
   <footer class="h-11 shrink-0 flex items-center gap-2 px-3 border-t border-white/[0.06] bg-ink-900/80 select-none text-[11px]">
-    <button class="bb opacity-50 cursor-not-allowed" title="MIDI Learn: map controllers in your host; not available inside the web view" disabled>MIDI Learn ▾</button>
     <button class="bb" title="Processing mode" @click="modeMenu">{{ g.mode.label }}</button>
     <button v-if="g.mode.index === 2" class="bb" :class="{ 'text-amber-300': dynWarning }" :title="dynWarning ? 'Dynamic EQ is disabled at this resolution' : 'Linear-phase resolution'" @click="qualityMenu">{{ dynWarning ? '⚠ ' : '' }}{{ g.quality.label }}</button>
 

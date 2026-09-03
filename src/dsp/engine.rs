@@ -237,25 +237,85 @@ pub fn effective_q(kind: Kind, q: f32, gain_db: f32, gain_q: bool) -> f32 {
     }
 }
 
-/// Character saturation. `x` is the sample, `mode` indexes
-/// [`CHARACTER_NAMES`]: 0 clean (identity); 1 subtle, `tanh(1.6 x) / 1.6`,
-/// unity for small signals and about 4.8 dB of compression at 0 dBFS;
-/// 2 warm, `tanh(2.5 y) / 2.5` with `y = x + 0.08 x |x|`, whose small
-/// asymmetric term adds even harmonics, about 8 dB of compression at
-/// 0 dBFS. Applied after the output gain, so the gain drives it.
-#[inline]
-fn saturate(x: f32, mode: usize) -> f32 {
-    match mode {
-        1 => {
-            let d = 1.6;
-            (d * x).tanh() / d
+/// The drive of each [`CHARACTER_NAMES`] mode: 0 clean, 1 subtle
+/// (`tanh(1.6 x) / 1.6`, about 4.8 dB of compression at 0 dBFS), 2 warm
+/// (`tanh(2.5 y) / 2.5`, about 8 dB).
+const CHARACTER_DRIVE: [f32; 3] = [0.0, 1.6, 2.5];
+
+/// Character saturation, band-limited.
+///
+/// Mode 1 is `tanh(d x) / d` and mode 2 pre-bends the input by
+/// `y = x + 0.08 x |x|`, whose asymmetry adds even harmonics, before the
+/// same curve. Applied after the output gain, so the gain drives it.
+///
+/// A `tanh` evaluated straight at the sample rate folds its upper
+/// harmonics back into the audio band: measured at 48 kHz, a 9 kHz
+/// full-scale sine in Warm put an alias at 21 kHz only 13.5 dB below the
+/// fundamental, which is an inharmonic tone, not a subtlety. This uses
+/// first-order antiderivative anti-aliasing instead, which needs no
+/// resampler and adds no latency: the output is the average of the curve
+/// across the segment between consecutive samples, obtained from the
+/// antiderivative `F(u) = ln(cosh(d u)) / d²`, which is exact for `tanh`.
+///
+/// The bend is applied first and left at the base rate: it is a quadratic,
+/// so it produces only a second harmonic, far below what `tanh` does.
+#[derive(Clone, Copy, Default)]
+struct Saturator {
+    /// Previous pre-bend input, per channel.
+    prev: [f32; 2],
+    /// Previous antiderivative value, per channel.
+    prev_f: [f32; 2],
+}
+
+impl Saturator {
+    /// `ln(cosh(d u)) / d²`, written so it does not overflow for large `u`
+    /// (`ln cosh v ≈ |v| − ln 2` once `|v|` is past a few units).
+    #[inline]
+    fn antiderivative(u: f32, d: f32) -> f32 {
+        let v = d * u;
+        let a = v.abs();
+        let l = if a > 12.0 {
+            a - std::f32::consts::LN_2
+        } else {
+            a.cosh().ln()
+        };
+        l / (d * d)
+    }
+
+    #[inline]
+    fn curve(u: f32, d: f32) -> f32 {
+        (d * u).tanh() / d
+    }
+
+    /// One sample of channel `ch`.
+    #[inline]
+    fn process(&mut self, ch: usize, x: f32, mode: usize) -> f32 {
+        if mode == 0 || mode >= CHARACTER_DRIVE.len() {
+            self.prev[ch] = 0.0;
+            self.prev_f[ch] = 0.0;
+            return x;
         }
-        2 => {
-            let d = 2.5;
-            let bent = x + 0.08 * x * x.abs();
-            (d * bent).tanh() / d
-        }
-        _ => x,
+        let d = CHARACTER_DRIVE[mode];
+        let u = if mode == 2 { x + 0.08 * x * x.abs() } else { x };
+        let f = Self::antiderivative(u, d);
+        let du = u - self.prev[ch];
+        // Below the threshold the difference quotient divides two nearly
+        // equal numbers and loses its precision, so fall back to the plain
+        // curve at the midpoint. A signal moving that slowly between
+        // samples has nothing near Nyquist to alias anyway.
+        let y = if du.abs() > 1e-4 {
+            (f - self.prev_f[ch]) / du
+        } else {
+            Self::curve(0.5 * (u + self.prev[ch]), d)
+        };
+        self.prev[ch] = u;
+        self.prev_f[ch] = f;
+        y
+    }
+
+    fn reset(&mut self) {
+        self.prev = [0.0; 2];
+        self.prev_f = [0.0; 2];
     }
 }
 
@@ -351,8 +411,9 @@ impl Band {
     }
 
     /// (Re)design the detector filter that isolates the band's region: a
-    /// low-pass for low shelves and high cuts, a high-pass for high shelves
-    /// and low cuts (the region those shapes act on), and a band-pass at the
+    /// low-pass for the shapes that work on the lows (low shelf, low cut),
+    /// a high-pass for the ones that work on the highs (high shelf, high
+    /// cut), and a band-pass at the
     /// band's Q (at least 0.3) for everything else. Solo listening and the
     /// dynamics detector share the coefficients.
     fn ensure_detector(&mut self, sr: f32) {
@@ -361,8 +422,13 @@ impl Band {
             return;
         }
         let c = match self.s.kind {
-            Kind::LowShelf | Kind::HighCut => Coefs::rbj(Rbj::LowPass, self.s.freq, 0.0, 0.707, sr),
-            Kind::HighShelf | Kind::LowCut => {
+            // The region each shape acts on: a low shelf and a low cut both
+            // work on the lows, a high shelf and a high cut on the highs.
+            // Pairing a shelf with the opposite cut inverted both cuts, so
+            // soloing a 1 kHz low cut auditioned 10 kHz at 0 dB and buried
+            // the 100 Hz it was there to remove (§10).
+            Kind::LowShelf | Kind::LowCut => Coefs::rbj(Rbj::LowPass, self.s.freq, 0.0, 0.707, sr),
+            Kind::HighShelf | Kind::HighCut => {
                 Coefs::rbj(Rbj::HighPass, self.s.freq, 0.0, 0.707, sr)
             }
             _ => Coefs::rbj(Rbj::BandPass, self.s.freq, 0.0, self.s.q.max(0.3), sr),
@@ -448,6 +514,9 @@ pub struct Engine {
     lp_taps: usize,
     /// Blocks processed; paces linear-phase redesigns.
     blocks: u64,
+    /// The band-limited *Character* stage; holds one sample of history per
+    /// channel for its anti-aliasing.
+    sat: Saturator,
 }
 
 impl Engine {
@@ -472,6 +541,7 @@ impl Engine {
                 Delay::new(lp_max_latency + 1),
             ],
             lp_dirty: true,
+            sat: Saturator::default(),
             lp_two_stage: false,
             lp_ms_domain: false,
             lp_taps: QUALITY_TAPS[2],
@@ -506,6 +576,7 @@ impl Engine {
         for d in &mut self.delay {
             d.reset();
         }
+        self.sat.reset();
         self.static_dirty = true;
         self.lp_dirty = true;
     }
@@ -551,8 +622,14 @@ impl Engine {
         }
         if g != self.g {
             let mode_changed = g.mode != self.g.mode || g.quality != self.g.quality;
+            // `gain_q` retunes every bell through `effective_q`, so it
+            // changes the static response and has to republish the curve
+            // and re-run auto gain. Leaving it out moved the response by
+            // 4.35 dB while `configure` returned false, so the reference
+            // curve went stale and auto gain kept its pre-toggle value.
             changed |= g.gain_scale != self.g.gain_scale
                 || g.auto_gain != self.g.auto_gain
+                || g.gain_q != self.g.gain_q
                 || g.bypass != self.g.bypass;
             self.g = g;
             if mode_changed {
@@ -812,14 +889,14 @@ impl Engine {
             for i in 0..len {
                 let m = 0.5 * (l[i] + r[i]) * gm;
                 let s = 0.5 * (l[i] - r[i]) * gs;
-                l[i] = saturate(m + s, character);
-                r[i] = saturate(m - s, character);
+                l[i] = self.sat.process(0, m + s, character);
+                r[i] = self.sat.process(1, m - s, character);
             }
         } else {
             let (gl, gr) = (gain * pa * sign, gain * pb * sign);
             for i in 0..len {
-                l[i] = saturate(l[i] * gl, character);
-                r[i] = saturate(r[i] * gr, character);
+                l[i] = self.sat.process(0, l[i] * gl, character);
+                r[i] = self.sat.process(1, r[i] * gr, character);
             }
         }
     }
@@ -1018,7 +1095,29 @@ mod tests {
             ..Globals::default()
         };
         e.configure(&bands, g);
-        assert_eq!(e.latency(), PARTITION + QUALITY_TAPS[1] / 2);
+        // Measure the latency instead of restating the expression the
+        // implementation evaluates: send an impulse and find where it comes
+        // out. The old assertion would have passed had the figure been wrong.
+        let mut probe = Engine::new(48000.0);
+        probe.configure(&bands, g);
+        let reported = probe.latency();
+        let n = reported + 4096;
+        let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+        l[0] = 1.0;
+        r[0] = 1.0;
+        for (cl, cr) in l.chunks_mut(256).zip(r.chunks_mut(256)) {
+            probe.process_block(cl, cr, None);
+        }
+        let peak_at = l
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).unwrap())
+            .map(|(i, _)| i)
+            .unwrap();
+        assert!(
+            (peak_at as isize - reported as isize).abs() <= 2,
+            "reports {reported} samples of latency, impulse peaks at {peak_at}"
+        );
         let amp = sine_rms(&mut e, 1000.0, 96000);
         assert!(
             (20.0 * amp.log10() - 6.0).abs() < 0.4,
@@ -1066,5 +1165,130 @@ mod tests {
         let outside = sine_rms(&mut e, 8000.0, 48000);
         assert!(inside > 0.9, "{inside}");
         assert!(outside < 0.1, "{outside}");
+    }
+
+    /// §10: a Low Cut and a High Cut solo the frequencies they *remove*.
+    /// Both were inverted, so soloing a 1 kHz low cut passed 10 kHz at
+    /// 0 dB and buried the 100 Hz it exists to take out. The old solo test
+    /// used a Bell only, which is why this survived.
+    #[test]
+    fn solo_auditions_the_region_each_shape_acts_on() {
+        for (kind, low_should_pass) in [
+            (Kind::LowCut, true),
+            (Kind::LowShelf, true),
+            (Kind::HighCut, false),
+            (Kind::HighShelf, false),
+        ] {
+            let mut e = Engine::new(48000.0);
+            let mut bands = [BandSettings::default(); BANDS];
+            bands[0] = BandSettings {
+                on: true,
+                kind,
+                freq: 1000.0,
+                gain_db: 6.0,
+                q: 0.707,
+                slope: 3,
+                solo: true,
+                ..BandSettings::default()
+            };
+            e.configure(&bands, Globals::default());
+            let low = 20.0 * sine_rms(&mut e, 100.0, 48000).max(1e-9).log10();
+            let high = 20.0 * sine_rms(&mut e, 10000.0, 48000).max(1e-9).log10();
+            if low_should_pass {
+                assert!(
+                    low > high + 20.0,
+                    "{kind:?} soloed should audition the lows: 100 Hz {low:.1} dB, 10 kHz {high:.1} dB"
+                );
+            } else {
+                assert!(
+                    high > low + 20.0,
+                    "{kind:?} soloed should audition the highs: 100 Hz {low:.1} dB, 10 kHz {high:.1} dB"
+                );
+            }
+        }
+    }
+
+    /// Toggling Gain-Q Interaction retunes every bell through
+    /// `effective_q`, so it changes the static response and `configure` has
+    /// to say so. It used to return false while the response moved by
+    /// 4.35 dB, leaving the published curve stale and auto gain holding a
+    /// pre-toggle value.
+    #[test]
+    fn toggling_gain_q_reports_a_static_change() {
+        let mut e = Engine::new(48000.0);
+        let mut bands = [BandSettings::default(); BANDS];
+        bands[0] = bell(1000.0, 24.0, 1.0);
+        e.configure(&bands, Globals::default());
+        let before = e.response_db(1300.0);
+        let g = Globals {
+            gain_q: true,
+            ..Globals::default()
+        };
+        let changed = e.configure(&bands, g);
+        let after = e.response_db(1300.0);
+        assert!(
+            (before - after).abs() > 1.0,
+            "gain_q moved the response by only {:.3} dB",
+            (before - after).abs()
+        );
+        assert!(
+            changed,
+            "the response moved but configure reported no change"
+        );
+    }
+
+    /// The *Character* stage runs a `tanh` on the output, which folds its
+    /// upper harmonics back into the band. Straight at the sample rate a
+    /// 9 kHz full-scale sine in Warm left an alias only 13.5 dB below the
+    /// fundamental; antiderivative anti-aliasing puts it near 20 dB down.
+    /// First-order anti-aliasing cannot do much better this close to
+    /// Nyquist, and the remaining margin is recorded in `docs/FEATURES.md`
+    /// rather than asserted away.
+    #[test]
+    fn character_saturation_is_band_limited() {
+        // (mode, tone, the lowest harmonic that folds back, required margin).
+        // At 5 kHz the third harmonic is still below Nyquist, so the fifth
+        // is the first one that aliases.
+        for (mode, tone, harmonic, floor_db) in [
+            (1usize, 9000.0f32, 3.0f32, 22.0f32),
+            (2, 9000.0, 3.0, 17.0),
+            (2, 5000.0, 5.0, 26.0),
+        ] {
+            let mut e = Engine::new(48000.0);
+            let g = Globals {
+                character: mode,
+                ..Globals::default()
+            };
+            e.configure(&[BandSettings::default(); BANDS], g);
+            let n = 16384usize;
+            let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+            for i in 0..n {
+                l[i] = (2.0 * PI * tone * i as f32 / 48000.0).sin();
+                r[i] = l[i];
+            }
+            for (cl, cr) in l.chunks_mut(256).zip(r.chunks_mut(256)) {
+                e.process_block(cl, cr, None);
+            }
+            // Goertzel at the fundamental and at the strongest alias the
+            // straight `tanh` produced, the third harmonic folded back.
+            let level = |f: f32| -> f32 {
+                let w = 2.0 * PI * f / 48000.0;
+                let (mut s1, mut s2) = (0.0f32, 0.0f32);
+                let coeff = 2.0 * w.cos();
+                for &x in &l[n / 2..] {
+                    let s0 = x + coeff * s1 - s2;
+                    s2 = s1;
+                    s1 = s0;
+                }
+                (s1 * s1 + s2 * s2 - coeff * s1 * s2).max(0.0).sqrt()
+            };
+            let fund = level(tone);
+            let alias = level(48000.0 - harmonic * tone);
+            let below = 20.0 * (fund / alias.max(1e-12)).log10();
+            assert!(
+                below > floor_db,
+                "mode {mode} at {tone} Hz: alias only {below:.1} dB below the fundamental"
+            );
+        }
     }
 }

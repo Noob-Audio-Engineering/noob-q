@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test test/curve.test.js"
   },
   "dependencies": {
     "@noob-audio-engineering/noob-vst-webgui-framework": "github:Noob-Audio-Engineering/noob-vst-webgui-framework",

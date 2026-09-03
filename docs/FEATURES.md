@@ -17,13 +17,13 @@ FabFilter's; **no** means not implemented.
 | Up to 24 bands, numbered on creation, no renumbering on delete | done | band N is parameter group `bN_*` |
 | Bell, Low/High Shelf, Low/High Cut, Notch, Band Pass, Tilt Shelf, Flat Tilt, All Pass | done | RBJ biquads; steep shelves are cascades; Flat Tilt is a very wide tilt shelf |
 | Slopes 6–96 dB/oct + Brickwall | done (stepped) | fixed steps only, no fractional slopes; Brickwall ≈ 192 dB/oct Butterworth |
-| Slope applies to cuts and to shelves / tilt | done | |
+| Slope applies to cuts and to shelves / tilt | done | on shelves the sections are staggered to the Butterworth Qs of the combined order. A shelf can only be as steep as its gain allows, since it has to travel the whole gain within the transition: a 30 dB shelf reaches about 30 dB/oct at the 96 dB setting, a 12 dB one about 15 |
 | Frequency 10 Hz – 30 kHz, gain ±30 dB, Q 0.025 – 40 (Q = 1 default) | done | |
 | Gain-Q interaction (Bell) | approx. | `Q · (1 + |gain| / 30)`, global toggle |
-| Q locked at 6 dB/oct | done | |
+| Q locked at 6 dB/oct | done | on shelves and tilts as well as cuts |
 | Bypass, solo (hold), delete, previous / next band, split L+R / M+S | done | |
 | Stereo placement Left / Right / Stereo / Mid / Side with the manual's colours | done | |
-| Copy / paste bands (also across instances) | done (browser clipboard) | |
+| Copy / paste bands | done, within one instance | not the browser clipboard and not across instances: the buffer is a value inside one page's JavaScript, and each instance runs its own web view. Copying the whole plug-in state does use the browser clipboard |
 | Surround / Atmos speaker panel | no | stereo and mono only |
 
 ## Display and gestures (§3, §28)
@@ -59,7 +59,7 @@ edges, bells elsewhere with Q from the excursion width; moving back erases.
 |---|---|---|
 | Dynamic range ring (±30 dB), positive = expand, negative = compress | done | |
 | Threshold: automatic or manual, live trigger level shown | done | auto = 3 dB above the region's running average |
-| Attack / release | done (ms) | manual gives 0–100 % with 50 % = auto; here explicit milliseconds |
+| Attack / release | done (ms) | manual gives 0–100 % with 50 % = auto; here explicit milliseconds. The gain is recomputed once per block, so one block is the finest timing that can be resolved; the times themselves come from the per-sample envelope and no longer follow the host's buffer size |
 | External side-chain trigger per band | done | plug-in exposes a stereo side-chain input |
 | Band / Free trigger filter | no | trigger is always the band's own region |
 | Audition trigger, dynamics bypass, clear dynamics | done | audition uses the band's solo path |
@@ -80,7 +80,7 @@ greyed out.
 | Natural Phase | approx. | same IIR path (no analog phase matching) |
 | Linear Phase with Low … Maximum resolutions and reported latency | done | FIR designed from the response, partitioned FFT convolution; single stage in L/R or M/S, two stages only when both L/R-specific and M/S-specific bands exist (doubled latency, as the manual says) |
 | Zipper-free frequency changes in linear phase | approx. | FIR redesign at most every second block |
-| Oversampling | no | the manual does not describe one either |
+| Oversampling | no, but the saturator is band-limited | the manual describes no oversampling *control*, which says nothing about the internal rate, so the old reason here was a non-sequitur. The *Character* stage now uses antiderivative anti-aliasing rather than a plain `tanh` at the sample rate. Measured at 48 kHz on a full-scale sine, worst alias below the fundamental: Warm at 9 kHz 13.5 dB before, 19.5 dB after; Subtle at 9 kHz 17.6 before, 24.8 after. First-order anti-aliasing cannot do much better that close to Nyquist, and the rest would need a resampler and its latency |
 
 ## Character (§16)
 
@@ -94,7 +94,7 @@ Clean / Subtle / Warm: **approx.** (tanh saturation, Warm adds even harmonics).
 | Range 60 / 90 / 120 dB, resolution 1024–8192, speed, tilt (default 4.5 dB/oct) | done |
 | Freeze (click) and temporary freeze (hold), peak hold while frozen | done |
 | Spectrum Grab: hover to grab, drag a peak into a Bell; permanent grab (`G` key / click-hold) | done |
-| External spectrum from other instances, Show Collisions | no |
+| External spectrum from other instances, Show Collisions | no, and no control is drawn | the disabled placeholder has been removed rather than left on the panel |
 
 ## EQ Match (§18)
 
@@ -119,8 +119,8 @@ spectrum), difference curve, choose the number of bands, Finish adds them.
 | Preset browser: folders, search, favourites, details, Save As, prev / next, keyboard navigation | done | user presets persist in the web view's storage, not in files |
 | Copy / paste the whole plug-in state | done | |
 | Help menu options (parameter display, auto range, frequency on hover) | done | |
-| MIDI Learn | no | map controllers in your host |
-| Instance list | no | needs cross-instance communication |
+| MIDI Learn | no, and no control is drawn | map controllers in your host; the disabled placeholder has been removed |
+| Instance list | partly done | the bottom bar lists the other running instances with their port and process id and opens them, over the framework's `/instances` endpoint. What is missing is acting on another instance from here, not the communication itself |
 | Collision detection | no | |
 | iOS gestures | n/a | |
 

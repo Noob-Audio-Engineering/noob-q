@@ -40,9 +40,11 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { EqCurve, Spectrum, SLOPE_NAMES } from '@noob-audio-engineering/noob-vst-webgui-framework/components';
+import { autoGainDb, scaledGainDb } from '../curveModel.js';
 import {
   PLACEMENTS,
   SHAPES,
+  SHAPE_IDS,
   allBands,
   bandToJson,
   createBand,
@@ -82,6 +84,64 @@ let sc = null;
 let eq = null;
 let ref_ = null;
 let offs = [];
+
+/**
+ * A stand-in for a band's gain handle that reports the gain *after* Gain
+ * Scale, which is what the engine designs the filter from
+ * (`Band::static_db` multiplies by `g.gain_scale` before choosing
+ * coefficients and before `effective_q`). `EqCurve` accepts any object with
+ * `.plain` and `.on`, so the scale reaches the drawn shape, the node and
+ * `curveDb` without the component knowing about it. Without this the page
+ * drew +9 dB where the audio was +18.
+ * @param {object} band A band from `allBands()`.
+ * @returns {{plain: number, on: (fn: Function) => Function}}
+ */
+function scaledGainHandle(band) {
+  return {
+    get plain() {
+      return scaledGainDb(SHAPE_IDS[band.shape.index] || 'peak', band.gain.plain, g.gainScale.plain / 100);
+    },
+    on(fn) {
+      const subs = [band.gain.param.on(fn), band.shape.param.on(fn), g.gainScale.param.on(fn)];
+      return () => subs.forEach((off) => off());
+    },
+  };
+}
+
+/** The band values `curveModel` needs, read from the live handles. */
+function modelBands() {
+  return bands.map((b) => ({
+    type: SHAPE_IDS[b.shape.index] || 'peak',
+    freq: b.freq.plain,
+    gain: b.gain.plain,
+    q: b.q.plain,
+    slope: b.slope.index,
+    enabled: b.on.plain >= 0.5,
+  }));
+}
+
+/**
+ * Auto Gain is a flat offset on the composite, so it moves the yellow curve
+ * bodily rather than changing any band. `EqCurve` rewrites only the `d` and
+ * opacity of these three paths, so a transform set here survives its
+ * redraws and only needs recomputing when the offset, the dB range or the
+ * height changes.
+ */
+function applyAutoGain() {
+  if (!eq) return;
+  const db = autoGainDb(modelBands(), sr.value, {
+    gainQ: g.gainQ.plain >= 0.5,
+    gainScale: g.gainScale.plain / 100,
+    autoGain: g.autoGain.plain >= 0.5,
+  });
+  const dy = db === 0 ? 0 : -(db / (2 * eq.opts.rangeDb)) * eq._h;
+  const t = dy === 0 ? '' : `translate(0 ${dy.toFixed(2)})`;
+  for (const el of [eq._curve, eq._curveHit, eq._curveFill]) {
+    if (!el) continue;
+    if (t) el.setAttribute('transform', t);
+    else el.removeAttribute('transform');
+  }
+}
 
 const RANGE_DB = [3, 6, 12, 30];
 const SPEED_MS = [600, 300, 150, 70, 30];
@@ -411,7 +471,7 @@ onMounted(() => {
     bands: bands.map((b) => ({
       type: b.shape.param,
       freq: b.freq.param,
-      gain: b.gain.param,
+      gain: scaledGainHandle(b),
       q: b.q.param,
       slope: b.slope.param,
       placement: b.place.param,
@@ -440,6 +500,23 @@ onMounted(() => {
       else clearTimeout(grabTimer);
     },
   });
+
+  // Auto Gain: recompute the composite offset whenever anything it depends
+  // on moves. The band handles are the same set EqCurve subscribes to, plus
+  // the three globals and the display range; a resize changes the pixels
+  // per dB, so the observer refreshes it too.
+  for (const b of bands) {
+    for (const k of ['shape', 'freq', 'gain', 'q', 'slope', 'on']) offs.push(b[k].param.on(applyAutoGain));
+  }
+  // The display range is handled by its own watch, which must resize the
+  // curve before the offset is recomputed in the new pixels per dB.
+  for (const k of ['gainScale', 'autoGain', 'gainQ']) {
+    if (g[k]) offs.push(g[k].param.on(applyAutoGain));
+  }
+  const autoGainRo = new ResizeObserver(() => applyAutoGain());
+  autoGainRo.observe(eqEl.value);
+  offs.push(() => autoGainRo.disconnect());
+  applyAutoGain();
 
   // DSP-reported response as a dashed reference line.
   ref_ = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -477,8 +554,11 @@ onMounted(() => {
       const r = rangeDb();
       const maxAbs = bands.filter((b) => b.on.on && b.hasGain).reduce((m, b) => Math.max(m, Math.abs(b.gain.plain), b.isDynamic ? Math.abs(b.gain.plain + b.dynRange.plain) : 0), 0);
       if (maxAbs > r) {
-        const next = RANGE_DB.findIndex((x) => x >= maxAbs);
-        if (next > g.displayRange.index) g.displayRange.setIndex(next < 0 ? RANGE_DB.length - 1 : next);
+        // Beyond the largest step there is no entry to find, so fall back to
+        // it before comparing; comparing -1 kept the range off +/-30 dB.
+        const found = RANGE_DB.findIndex((x) => x >= maxAbs);
+        const next = found < 0 ? RANGE_DB.length - 1 : found;
+        if (next > g.displayRange.index) g.displayRange.setIndex(next);
       }
     }),
   );
@@ -486,7 +566,7 @@ onMounted(() => {
 });
 
 watch(() => [g.anPre.on, g.anPost.on, g.anSc?.on, g.anRange.index, g.anSpeed.index, g.anTilt.index, g.anFreeze.on], applyAnalyzerSettings);
-watch(() => g.displayRange.index, () => { eq?.setRangeDb(rangeDb()); updatePrimaryPos(); });
+watch(() => g.displayRange.index, () => { eq?.setRangeDb(rangeDb()); applyAutoGain(); updatePrimaryPos(); });
 watch(
   () => [ui.zoom.min, ui.zoom.max],
   () => {

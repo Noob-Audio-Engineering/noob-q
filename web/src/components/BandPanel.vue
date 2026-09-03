@@ -136,6 +136,13 @@ function toggleExpanded() {
 const thrPos = computed(() => (b.value ? b.value.dynThr.norm : 0));
 // Live trigger level from the `band_level` stream, -60..0 dB mapped onto the meter.
 const lvlPos = computed(() => (b.value ? Math.max(0, Math.min(1, (level.value + 60) / 60)) : 0));
+// Where to draw the threshold line. In automatic mode the engine tracks the
+// running average of the trigger level and sits 3 dB above it
+// (`dynamics.rs`), so the marker follows the level rather than pinning to the
+// top of the meter, which drew it at 0 dBFS however low the threshold was.
+const thrMarkerPos = computed(() =>
+  b.value && b.value.dynAuto.on ? Math.max(0, Math.min(1, (level.value + 3 + 60) / 60)) : thrPos.value,
+);
 // Linear Phase at Very High / Maximum resolution has no dynamic EQ (manual §6): the FIR is too long to modulate.
 const dynDisabled = computed(() => g.mode.index === 2 && g.quality.index >= 3);
 </script>
@@ -154,7 +161,7 @@ const dynDisabled = computed(() => g.mode.index === 2 && g.quality.index >= 3);
         <button class="btn min-w-[60px] tabular" :class="{ 'opacity-40': !b.hasSlope }" :disabled="!b.hasSlope" title="Slope" @click="slopeMenu">{{ b.slope.label }}/oct</button>
         <Knob :p="b.freq" :size="54" label="Freq" :color="b.color" />
         <Knob v-if="b.hasGain" :p="b.gain" :ring="b.canDyn ? b.dynRange : null" :size="62" label="Gain" :color="b.color" />
-        <button v-if="b.shape.index === 0" class="btn text-[10px]" :class="{ on: g.gainQ.on }" title="Gain-Q interaction (Bell): Q narrows as gain grows" @click="g.gainQ.toggle()">G·Q</button>
+        <button v-if="b.shape.index === 0" class="btn text-[10px]" :class="{ on: g.gainQ.on }" title="Gain-Q interaction (global, all Bell bands): Q narrows as gain grows" @click="g.gainQ.toggle()">G·Q</button>
         <Knob :p="b.q" :size="54" label="Q" :color="b.color" :disabled="b.slope.index === 0 && b.isCut" />
         <div class="flex flex-col items-center text-[10px] text-slate-500">
           <div class="flex items-center gap-1">
@@ -181,7 +188,7 @@ const dynDisabled = computed(() => g.mode.index === 2 && g.quality.index >= 3);
           <div class="flex flex-col items-center gap-0.5">
             <div class="relative w-3 h-12 rounded bg-white/[0.06] overflow-hidden" title="Threshold: drag; top = automatic">
               <div class="absolute left-0 right-0 bottom-0 bg-emerald-400/50" :style="{ height: `${lvlPos * 100}%` }" />
-              <div class="absolute left-0 right-0 h-0.5 bg-amber-300" :style="{ bottom: `${(b.dynAuto.on ? 1 : thrPos) * 100}%` }" />
+              <div class="absolute left-0 right-0 h-0.5 bg-amber-300" :style="{ bottom: `${thrMarkerPos * 100}%` }" />
             </div>
             <input type="range" min="0" max="1" step="0.005" class="w-14 -rotate-90 origin-center absolute opacity-0 cursor-ns-resize h-12" :value="thrPos" @pointerdown="b.dynThr.begin()" @input="b.dynAuto.setOn(false); onRangeInput($event)" @pointerup="b.dynThr.end()" />
             <button class="text-[9px]" :class="b.dynAuto.on ? 'text-amber-300' : 'text-slate-500'" title="Automatic threshold" @click="b.dynAuto.toggle()">{{ b.dynAuto.on ? 'A' : b.dynThr.text }}</button>

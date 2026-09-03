@@ -214,10 +214,14 @@ flowchart LR
 ```
 
 * **Filters** (`dsp/filters.rs`). RBJ cookbook biquads for bells, notches,
-  band-passes, all-passes and shelves; steeper shelves are cascades of
-  gentler ones; tilts are a low shelf at −g and a high shelf at +g; cuts are
-  Butterworth cascades (one first-order section for odd orders) whose most
-  resonant section is scaled by the band's Q to shape the knee. Brickwall is
+  band-passes, all-passes and shelves; steeper shelves are cascades whose
+  sections take the Butterworth Qs of the combined order, so the transition
+  really does narrow; tilts are a low shelf at −g and a high shelf at +g;
+  cuts are Butterworth cascades (one first-order section for odd orders)
+  whose most resonant section — the first one, `k = 1` — is scaled by the
+  band's Q to shape the knee. A shelf's Q is mapped onto a bounded range
+  first, because the cookbook's shelf form puts Q in the denominator of its
+  slope term and a raw Q of 40 walks the poles onto the unit circle. Brickwall is
   a 32nd-order Butterworth. Transposed direct form II, two channels per
   section. the framework's `web/components/eqcurve.js` mirrors the formulas so the drawn
   curve is the real one.
@@ -303,5 +307,7 @@ shelves reach full gain, dynamics reach their range and release, the
 convolver matches direct convolution, designed FIRs have the requested
 magnitude and exact symmetry, the analyzer finds a sine at every resolution,
 and the engine boosts, places, reports latency, auto-gains and solos as
-specified. The wire-level behaviour is covered by noob-vst-webgui-framework's tests; the
-page is checked visually with headless screenshots against the standalone.
+specified. The wire-level behaviour is covered by noob-vst-webgui-framework's tests.
+The page has its own tests under `web/test/`, which compare the browser's
+curve model against the engine's published curve rather than against
+expectations written by hand.
