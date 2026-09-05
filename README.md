@@ -33,7 +33,7 @@ other guides live in the framework's
 cd web && npm install && npm run build && cd ..
 
 # 2. Standalone: serves web/dist on http://127.0.0.1:4242/ (or the next free port)
-cargo run --bin noob-q-standalone --release -- --open
+cargo run --features plugin --bin noob-q-standalone --release -- --open
 
 # 3. Tests (DSP: filters, dynamics, convolver, analyzer, engine)
 cargo test
