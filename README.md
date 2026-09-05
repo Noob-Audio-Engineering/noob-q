@@ -26,6 +26,19 @@ Feature coverage against the Pro-Q 4 manual is tracked in
 other guides live in the framework's
 [`docs/`](https://github.com/Noob-Audio-Engineering/noob-vst-webgui-framework/tree/main/docs).
 
+## Install it
+
+Every commit on `main` is built for Windows and macOS and published to the
+rolling [`latest`](https://github.com/Noob-Audio-Engineering/noob-q/releases/tag/latest)
+release: a VST3 and a CLAP in one zip, with a checksummed manifest beside them
+and a photograph of that build running.
+
+The easy way is the [Noob Plugin
+Manager](https://github.com/Noob-Audio-Engineering/noob-plugin-manager), which
+installs and updates every plug-in in this organisation and verifies the
+checksum before it writes anything. Or take the zip and unpack it into your
+plug-in folders yourself.
+
 ## Build and run
 
 ```sh
