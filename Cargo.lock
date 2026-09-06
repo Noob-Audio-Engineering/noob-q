@@ -1602,6 +1602,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72ef4a56884ca558e5ddb05a1d1e7e1bfd9a68d9ed024c21704cc98872dae1bb"
 
 [[package]]
+name = "noob-band-shapes"
+version = "0.1.0"
+source = "git+https://github.com/Noob-Audio-Engineering/noob-band-shapes#e98738e37d5b9bba5eecce34dadce06d5562e0cf"
+
+[[package]]
 name = "noob-q"
 version = "0.1.0"
 dependencies = [
@@ -1609,6 +1614,7 @@ dependencies = [
  "include_dir",
  "log",
  "nih_plug",
+ "noob-band-shapes",
  "noob-vst-webgui-framework",
  "noob-vst-webgui-framework-nih",
  "rustfft",

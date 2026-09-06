@@ -50,6 +50,14 @@ env_logger = "0.11"
 serde_json = "1"
 rustfft = "6"
 
+[dev-dependencies]
+# Only in tests: an independent implementation of the same band shapes, so
+# this crate has something to disagree with. Not a runtime dependency --- the
+# curve Noob-Q draws is the response of its own digital cascade, warping and
+# slopes included, which is more accurate for an equaliser than an analogue
+# prototype and is what the crate deliberately does not carry.
+noob-band-shapes = { git = "https://github.com/Noob-Audio-Engineering/noob-band-shapes" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
